@@ -56,6 +56,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=2,
         help="Maximum depth to expand (root depth is 0).",
     )
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=["low", "medium", "high"],
+        help="Optional reasoning effort to request from the model.",
+    )
+    parser.add_argument(
+        "--service-tier",
+        help="Optional service tier to request when calling the model.",
+    )
     return parser
 
 
@@ -65,6 +74,8 @@ def call_model(
     base_prompt: str,
     path: List[str],
     parent_description: str,
+    reasoning_effort: str | None,
+    service_tier: str | None,
 ) -> List[dict]:
     """Call the model and return the list of child node dicts."""
 
@@ -76,14 +87,14 @@ def call_model(
         "Return child nodes by calling the `create_children` function."
     )
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
+    request_kwargs = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt_message},
             {"role": "user", "content": context_message},
         ],
-        tools=[
+        "tools": [
             {
                 "type": "function",
                 "function": {
@@ -116,8 +127,15 @@ def call_model(
                 },
             }
         ],
-        tool_choice={"type": "function", "function": {"name": "create_children"}},
-    )
+        "tool_choice": {"type": "function", "function": {"name": "create_children"}},
+    }
+
+    if reasoning_effort is not None:
+        request_kwargs["reasoning"] = {"effort": reasoning_effort}
+    if service_tier is not None:
+        request_kwargs["service_tier"] = service_tier
+
+    response = client.chat.completions.create(**request_kwargs)
 
     message = response.choices[0].message
     if not message.tool_calls:
@@ -158,6 +176,8 @@ def expand_node(
     path: List[str],
     depth: int,
     max_depth: int,
+    reasoning_effort: str | None,
+    service_tier: str | None,
 ) -> None:
     """Recursively expand a node up to the maximum depth."""
 
@@ -165,7 +185,15 @@ def expand_node(
         return
 
     try:
-        child_dicts = call_model(client, model, base_prompt, path, node.description)
+        child_dicts = call_model(
+            client,
+            model,
+            base_prompt,
+            path,
+            node.description,
+            reasoning_effort,
+            service_tier,
+        )
     except Exception as exc:  # noqa: BLE001 - propagate clear message
         raise RuntimeError(f"Failed to expand node {' > '.join(path) or 'root'}: {exc}") from exc
 
@@ -180,6 +208,8 @@ def expand_node(
             path + [child_node.title],
             depth + 1,
             max_depth,
+            reasoning_effort,
+            service_tier,
         )
 
 
@@ -203,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         path=[],
         depth=0,
         max_depth=args.max_depth,
+        reasoning_effort=args.reasoning_effort,
+        service_tier=args.service_tier,
     )
 
     print(json.dumps(root.to_dict(), indent=2, ensure_ascii=False))
