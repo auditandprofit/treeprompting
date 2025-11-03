@@ -6,7 +6,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Callable, List
 
 from openai import OpenAI
 from openai.types.responses import ResponseFunctionToolCall
@@ -65,6 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--service-tier",
         help="Optional service tier to request when calling the model.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help=(
+            "Path to write the tree JSON incrementally while expanding. "
+            "Defaults to the prompt file name with a .json suffix."
+        ),
     )
     return parser
 
@@ -207,8 +215,13 @@ def expand_node(
     max_depth: int,
     reasoning_effort: str | None,
     service_tier: str | None,
+    save_tree: Callable[[], None],
 ) -> None:
-    """Recursively expand a node up to the maximum depth."""
+    """Recursively expand a node up to the maximum depth.
+
+    The ``save_tree`` callback is invoked after each new child is attached so the
+    on-disk representation stays in sync with the in-memory tree.
+    """
 
     if depth >= max_depth:
         return
@@ -228,6 +241,7 @@ def expand_node(
     for child in child_dicts:
         child_node = Node(title=child["title"], description=child["description"])
         node.children.append(child_node)
+        save_tree()
         child_path = path + [child_node.title]
         child_lineage = lineage + [(child_path, child_node.description)]
         expand_node(
@@ -241,6 +255,7 @@ def expand_node(
             max_depth,
             reasoning_effort,
             service_tier,
+            save_tree,
         )
 
 
@@ -253,9 +268,35 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         parser.error(f"Unable to read prompt file: {exc}")
 
+    if args.output is not None:
+        output_path = args.output
+    else:
+        if args.prompt_file.suffix:
+            output_path = args.prompt_file.with_suffix(
+                args.prompt_file.suffix + ".json"
+            )
+        else:
+            output_path = args.prompt_file.with_name(args.prompt_file.name + ".json")
+
     client = OpenAI()
 
     root = Node(title="root", description=prompt_text.strip() or "(empty prompt)")
+
+    def save_tree() -> None:
+        payload = json.dumps(root.to_dict(), indent=2, ensure_ascii=False)
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            if output_path.suffix:
+                temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+            else:
+                temp_path = output_path.with_name(output_path.name + ".tmp")
+            temp_path.write_text(payload, encoding="utf-8")
+            temp_path.replace(output_path)
+        except OSError as exc:
+            raise RuntimeError(f"Unable to write tree to {output_path}: {exc}") from exc
+
+    save_tree()
+
     expand_node(
         client=client,
         model=args.model,
@@ -267,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         max_depth=args.max_depth,
         reasoning_effort=args.reasoning_effort,
         service_tier=args.service_tier,
+        save_tree=save_tree,
     )
 
     print(json.dumps(root.to_dict(), indent=2, ensure_ascii=False))
