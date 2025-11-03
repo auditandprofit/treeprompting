@@ -72,28 +72,34 @@ def call_model(
     client: OpenAI,
     model: str,
     base_prompt: str,
-    path: List[str],
-    parent_description: str,
+    lineage: list[tuple[list[str], str]],
     reasoning_effort: str | None,
     service_tier: str | None,
 ) -> List[dict]:
     """Call the model and return the list of child node dicts."""
 
-    path_str = " > ".join(path) if path else "root"
     prompt_message = base_prompt.strip() or "(empty prompt)"
-    context_message = (
-        f"You are expanding the node at path: {path_str}.\n"
-        f"Parent description: {parent_description}\n"
-        "Return child nodes by calling the `create_children` function."
-    )
+
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt_message},
+    ]
+
+    for idx, (node_path, description) in enumerate(lineage):
+        path_str = " > ".join(node_path) if node_path else "root"
+        content_lines = [
+            f"Node path: {path_str}",
+            f"Content: {description.strip() or '(empty description)'}",
+        ]
+        if idx == len(lineage) - 1:
+            content_lines.append(
+                "Respond by calling the `create_children` function with the children for this node."
+            )
+        messages.append({"role": "user", "content": "\n".join(content_lines)})
 
     request_kwargs = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt_message},
-            {"role": "user", "content": context_message},
-        ],
+        "messages": messages,
         "tools": [
             {
                 "type": "function",
@@ -174,6 +180,7 @@ def expand_node(
     base_prompt: str,
     node: Node,
     path: List[str],
+    lineage: list[tuple[list[str], str]],
     depth: int,
     max_depth: int,
     reasoning_effort: str | None,
@@ -189,8 +196,7 @@ def expand_node(
             client,
             model,
             base_prompt,
-            path,
-            node.description,
+            lineage,
             reasoning_effort,
             service_tier,
         )
@@ -200,12 +206,15 @@ def expand_node(
     for child in child_dicts:
         child_node = Node(title=child["title"], description=child["description"])
         node.children.append(child_node)
+        child_path = path + [child_node.title]
+        child_lineage = lineage + [(child_path, child_node.description)]
         expand_node(
             client,
             model,
             base_prompt,
             child_node,
-            path + [child_node.title],
+            child_path,
+            child_lineage,
             depth + 1,
             max_depth,
             reasoning_effort,
@@ -230,7 +239,8 @@ def main(argv: list[str] | None = None) -> int:
         model=args.model,
         base_prompt=prompt_text,
         node=root,
-        path=[],
+        path=[root.title],
+        lineage=[([root.title], root.description)],
         depth=0,
         max_depth=args.max_depth,
         reasoning_effort=args.reasoning_effort,
