@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import deque
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -204,59 +205,53 @@ def call_model(
     return validated_children
 
 
-def expand_node(
+def expand_tree(
     client: OpenAI,
     model: str,
     base_prompt: str,
-    node: Node,
-    path: List[str],
-    lineage: list[tuple[list[str], str]],
-    depth: int,
+    root: Node,
     max_depth: int,
     reasoning_effort: str | None,
     service_tier: str | None,
     save_tree: Callable[[], None],
 ) -> None:
-    """Recursively expand a node up to the maximum depth.
+    """Expand the tree breadth-first, persisting children as soon as they are known."""
 
-    The ``save_tree`` callback is invoked after each new child is attached so the
-    on-disk representation stays in sync with the in-memory tree.
-    """
+    work_queue: deque[tuple[Node, List[str], list[tuple[list[str], str]], int]] = deque(
+        [(root, [root.title], [([root.title], root.description)], 0)]
+    )
 
-    if depth >= max_depth:
-        return
+    while work_queue:
+        node, path, lineage, depth = work_queue.popleft()
 
-    try:
-        child_dicts = call_model(
-            client,
-            model,
-            base_prompt,
-            lineage,
-            reasoning_effort,
-            service_tier,
-        )
-    except Exception as exc:  # noqa: BLE001 - propagate clear message
-        raise RuntimeError(f"Failed to expand node {' > '.join(path) or 'root'}: {exc}") from exc
+        if depth >= max_depth:
+            continue
 
-    for child in child_dicts:
-        child_node = Node(title=child["title"], description=child["description"])
-        node.children.append(child_node)
-        save_tree()
-        child_path = path + [child_node.title]
-        child_lineage = lineage + [(child_path, child_node.description)]
-        expand_node(
-            client,
-            model,
-            base_prompt,
-            child_node,
-            child_path,
-            child_lineage,
-            depth + 1,
-            max_depth,
-            reasoning_effort,
-            service_tier,
-            save_tree,
-        )
+        try:
+            child_dicts = call_model(
+                client,
+                model,
+                base_prompt,
+                lineage,
+                reasoning_effort,
+                service_tier,
+            )
+        except Exception as exc:  # noqa: BLE001 - propagate clear message
+            raise RuntimeError(
+                f"Failed to expand node {' > '.join(path) or 'root'}: {exc}"
+            ) from exc
+
+        new_children: list[Node] = []
+        for child in child_dicts:
+            child_node = Node(title=child["title"], description=child["description"])
+            new_children.append(child_node)
+            child_path = path + [child_node.title]
+            child_lineage = lineage + [(child_path, child_node.description)]
+            work_queue.append((child_node, child_path, child_lineage, depth + 1))
+
+        if new_children:
+            node.children.extend(new_children)
+            save_tree()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -297,14 +292,11 @@ def main(argv: list[str] | None = None) -> int:
 
     save_tree()
 
-    expand_node(
+    expand_tree(
         client=client,
         model=args.model,
         base_prompt=prompt_text,
-        node=root,
-        path=[root.title],
-        lineage=[([root.title], root.description)],
-        depth=0,
+        root=root,
         max_depth=args.max_depth,
         reasoning_effort=args.reasoning_effort,
         service_tier=args.service_tier,
