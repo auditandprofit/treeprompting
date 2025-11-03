@@ -151,7 +151,7 @@ def call_model(
                 },
             }
         ],
-        "tool_choice": {"type": "tool", "name": "create_children"},
+        "tool_choice": {"type": "tool", "tool_name": "create_children"},
     }
 
     if reasoning_effort is not None:
