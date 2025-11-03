@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections import deque
 import sys
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List
@@ -74,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Path to write the tree JSON incrementally while expanding. "
             "Defaults to the prompt file name with a .json suffix."
         ),
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Maximum number of concurrent API calls (default: 1).",
     )
     return parser
 
@@ -211,47 +218,68 @@ def expand_tree(
     base_prompt: str,
     root: Node,
     max_depth: int,
+    max_concurrency: int,
     reasoning_effort: str | None,
     service_tier: str | None,
     save_tree: Callable[[], None],
 ) -> None:
-    """Expand the tree breadth-first, persisting children as soon as they are known."""
+    """Expand the tree using a work queue with limited parallel API calls."""
 
     work_queue: deque[tuple[Node, List[str], list[tuple[list[str], str]], int]] = deque(
         [(root, [root.title], [([root.title], root.description)], 0)]
     )
 
-    while work_queue:
-        node, path, lineage, depth = work_queue.popleft()
+    in_flight: dict[
+        Future[List[dict]],
+        tuple[Node, List[str], list[tuple[list[str], str]], int],
+    ] = {}
 
-        if depth >= max_depth:
-            continue
+    with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+        while work_queue or in_flight:
+            while work_queue and len(in_flight) < max_concurrency:
+                node, path, lineage, depth = work_queue.popleft()
+                if depth >= max_depth:
+                    continue
+                future = executor.submit(
+                    call_model,
+                    client,
+                    model,
+                    base_prompt,
+                    lineage,
+                    reasoning_effort,
+                    service_tier,
+                )
+                in_flight[future] = (node, path, lineage, depth)
 
-        try:
-            child_dicts = call_model(
-                client,
-                model,
-                base_prompt,
-                lineage,
-                reasoning_effort,
-                service_tier,
-            )
-        except Exception as exc:  # noqa: BLE001 - propagate clear message
-            raise RuntimeError(
-                f"Failed to expand node {' > '.join(path) or 'root'}: {exc}"
-            ) from exc
+            if not in_flight:
+                continue
 
-        new_children: list[Node] = []
-        for child in child_dicts:
-            child_node = Node(title=child["title"], description=child["description"])
-            new_children.append(child_node)
-            child_path = path + [child_node.title]
-            child_lineage = lineage + [(child_path, child_node.description)]
-            work_queue.append((child_node, child_path, child_lineage, depth + 1))
+            done, _ = wait(in_flight.keys(), return_when=FIRST_COMPLETED)
 
-        if new_children:
-            node.children.extend(new_children)
-            save_tree()
+            for future in done:
+                node, path, lineage, depth = in_flight.pop(future)
+                try:
+                    child_dicts = future.result()
+                except Exception as exc:  # noqa: BLE001 - propagate clear message
+                    raise RuntimeError(
+                        f"Failed to expand node {' > '.join(path) or 'root'}: {exc}"
+                    ) from exc
+
+                new_children: list[Node] = []
+                for child in child_dicts:
+                    child_node = Node(
+                        title=child["title"], description=child["description"]
+                    )
+                    new_children.append(child_node)
+                    child_path = path + [child_node.title]
+                    child_lineage = lineage + [
+                        (child_path, child_node.description)
+                    ]
+                    work_queue.append((child_node, child_path, child_lineage, depth + 1))
+
+                if new_children:
+                    node.children.extend(new_children)
+                    save_tree()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -272,6 +300,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             output_path = args.prompt_file.with_name(args.prompt_file.name + ".json")
+
+    if args.concurrency < 1:
+        parser.error("--concurrency must be at least 1.")
 
     client = OpenAI()
 
@@ -298,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         base_prompt=prompt_text,
         root=root,
         max_depth=args.max_depth,
+        max_concurrency=args.concurrency,
         reasoning_effort=args.reasoning_effort,
         service_tier=args.service_tier,
         save_tree=save_tree,
