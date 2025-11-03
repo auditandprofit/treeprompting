@@ -151,7 +151,9 @@ def call_model(
                 },
             }
         ],
-        "tool_choice": {"type": "tool", "tool_name": "create_children"},
+        # The Responses API expects the chosen tool referenced by `name`,
+        # not `tool_name` (which the server rejects as an unknown parameter).
+        "tool_choice": {"type": "tool", "name": "create_children"},
     }
 
     if reasoning_effort is not None:
