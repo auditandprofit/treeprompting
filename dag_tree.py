@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List
 
 from openai import OpenAI
+from openai.types.responses import ResponseFunctionToolCall
 
 
 SYSTEM_PROMPT = (
@@ -97,9 +98,25 @@ def call_model(
             )
         messages.append({"role": "user", "content": "\n".join(content_lines)})
 
+    input_messages: list[dict[str, object]] = []
+
+    for message in messages:
+        input_messages.append(
+            {
+                "role": message["role"],
+                "type": "message",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": message["content"],
+                    }
+                ],
+            }
+        )
+
     request_kwargs = {
         "model": model,
-        "messages": messages,
+        "input": input_messages,
         "tools": [
             {
                 "type": "function",
@@ -133,7 +150,7 @@ def call_model(
                 },
             }
         ],
-        "tool_choice": {"type": "function", "function": {"name": "create_children"}},
+        "tool_choice": {"type": "function", "name": "create_children"},
     }
 
     if reasoning_effort is not None:
@@ -141,13 +158,18 @@ def call_model(
     if service_tier is not None:
         request_kwargs["service_tier"] = service_tier
 
-    response = client.chat.completions.create(**request_kwargs)
+    response = client.responses.create(**request_kwargs)
 
-    message = response.choices[0].message
-    if not message.tool_calls:
+    tool_call: ResponseFunctionToolCall | None = None
+    for item in response.output or []:
+        if isinstance(item, ResponseFunctionToolCall) and item.name == "create_children":
+            tool_call = item
+            break
+
+    if tool_call is None:
         raise RuntimeError("Model did not call the create_children function.")
 
-    arguments = message.tool_calls[0].function.arguments
+    arguments = tool_call.arguments
     try:
         payload = json.loads(arguments)
     except json.JSONDecodeError as exc:
