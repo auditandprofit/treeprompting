@@ -82,6 +82,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum depth to expand (root depth is 0).",
     )
     parser.add_argument(
+        "--breadth-limit",
+        type=int,
+        help=(
+            "Optional maximum number of children allowed per expansion. "
+            "If provided, schema and validation will enforce this limit."
+        ),
+    )
+    parser.add_argument(
         "--reasoning-effort",
         choices=["low", "medium", "high"],
         help="Optional reasoning effort to request from the model.",
@@ -120,6 +128,7 @@ def call_model(
     model: str,
     base_prompt: str,
     lineage: list[tuple[list[str], str]],
+    breadth_limit: int | None,
     reasoning_effort: str | None,
     service_tier: str | None,
 ) -> List[dict]:
@@ -142,6 +151,10 @@ def call_model(
             content_lines.append(
                 "Respond by calling the `create_children` function with the children for this node."
             )
+            if breadth_limit is not None:
+                content_lines.append(
+                    f"You may return at most {breadth_limit} children in total."
+                )
         messages.append({"role": "user", "content": "\n".join(content_lines)})
 
     input_messages: list[dict[str, object]] = []
@@ -199,6 +212,11 @@ def call_model(
         "tool_choice": {"type": "function", "name": "create_children"},
     }
 
+    if breadth_limit is not None:
+        request_kwargs["tools"][0]["parameters"]["properties"]["children"][
+            "maxItems"
+        ] = breadth_limit
+
     if reasoning_effort is not None:
         request_kwargs["reasoning"] = {"effort": reasoning_effort}
     if service_tier is not None:
@@ -224,6 +242,11 @@ def call_model(
     children = payload.get("children", [])
     if not isinstance(children, list):
         raise RuntimeError("Model returned a non-list `children` field.")
+
+    if breadth_limit is not None and len(children) > breadth_limit:
+        raise RuntimeError(
+            "Model returned more children than the enforced breadth limit."
+        )
 
     validated_children = []
     for idx, child in enumerate(children, start=1):
@@ -276,6 +299,7 @@ def expand_tree(
     root: Node,
     max_depth: int,
     max_concurrency: int,
+    breadth_limit: int | None,
     reasoning_effort: str | None,
     service_tier: str | None,
     save_tree: Callable[[], None],
@@ -306,6 +330,7 @@ def expand_tree(
                     model,
                     base_prompt,
                     lineage,
+                    breadth_limit,
                     reasoning_effort,
                     service_tier,
                 )
@@ -372,6 +397,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.concurrency < 1:
         parser.error("--concurrency must be at least 1.")
 
+    if args.breadth_limit is not None and args.breadth_limit < 1:
+        parser.error("--breadth-limit must be at least 1 if provided.")
+
     if args.resume_from is not None:
         try:
             resume_payload = json.loads(
@@ -417,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
         root=root,
         max_depth=args.max_depth,
         max_concurrency=args.concurrency,
+        breadth_limit=args.breadth_limit,
         reasoning_effort=args.reasoning_effort,
         service_tier=args.service_tier,
         save_tree=save_tree,
