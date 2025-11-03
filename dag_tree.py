@@ -69,8 +69,8 @@ def call_model(
     """Call the model and return the list of child node dicts."""
 
     path_str = " > ".join(path) if path else "root"
-    user_message = (
-        f"{base_prompt}\n\n"
+    prompt_message = base_prompt.strip() or "(empty prompt)"
+    context_message = (
         f"You are expanding the node at path: {path_str}.\n"
         f"Parent description: {parent_description}\n"
         "Return child nodes by calling the `create_children` function."
@@ -80,7 +80,8 @@ def call_model(
         model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "user", "content": prompt_message},
+            {"role": "user", "content": context_message},
         ],
         tools=[
             {
