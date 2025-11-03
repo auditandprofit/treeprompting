@@ -235,6 +235,11 @@ def expand_tree(
     ] = {}
 
     with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+        print("In-flight requests:   0", end="", flush=True)
+
+        def update_inflight_status() -> None:
+            print(f"\rIn-flight requests: {len(in_flight):3d}", end="", flush=True)
+
         while work_queue or in_flight:
             while work_queue and len(in_flight) < max_concurrency:
                 node, path, lineage, depth = work_queue.popleft()
@@ -250,8 +255,10 @@ def expand_tree(
                     service_tier,
                 )
                 in_flight[future] = (node, path, lineage, depth)
+                update_inflight_status()
 
             if not in_flight:
+                update_inflight_status()
                 continue
 
             done, _ = wait(in_flight.keys(), return_when=FIRST_COMPLETED)
@@ -280,6 +287,10 @@ def expand_tree(
                 if new_children:
                     node.children.extend(new_children)
                     save_tree()
+
+            update_inflight_status()
+
+        print("\rIn-flight requests:   0")
 
 
 def main(argv: list[str] | None = None) -> int:
