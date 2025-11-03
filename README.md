@@ -1,14 +1,14 @@
-# Tree Prompting
+# informationspace
 
-A command-line utility for turning a base prompt into a directed acyclic graph (DAG) of follow-up ideas using the OpenAI Responses API. The tool repeatedly asks the model to expand each node by calling a `create_children` function, incrementally building a JSON tree on disk and printing the final structure to standard output.
+informationspace is a command-line utility for enumerating latent knowledge held by large language models. It grows a branching representation of "information space" by prompting an LLM to surface breadth-first and depth-first leads, persisting the resulting structure as JSON for downstream reasoning tools. Rather than relying solely on a linear chain-of-thought, informationspace acts as an oracle that maps existing human information in a branching manner so you can explore, prioritize, and analyze expansive knowledge domains.
 
 ## Features
 
-- Expand a plain-text prompt into a multi-level idea tree.
-- Enforce structured responses via OpenAI function calling.
-- Resume expansion from an existing tree JSON file.
-- Limit depth and concurrency to control cost and complexity.
-- Persist intermediate results safely while the tree grows.
+- Enumerate an information space from an initial prompt into a branching DAG of tacit insights.
+- Persist snapshots of the information space as JSON for separate reasoning workflows and analytic tooling.
+- Resume exploration from a previously saved information space JSON file to deepen specific branches.
+- Tune depth, concurrency, and reasoning controls to balance exploration breadth, depth, cost, and fidelity.
+- Safely write intermediate states while the information space expands.
 
 ## Installation
 
@@ -36,9 +36,9 @@ export OPENAI_API_KEY="sk-..."
 python -m dag_tree prompt.txt --max-depth 3 --concurrency 2
 ```
 
-By default, the tool writes incremental results beside the prompt file (e.g., `prompt.txt.json`) and prints the completed tree to stdout.
+By default, the tool writes incremental results beside the prompt file (e.g., `prompt.txt.json`) and prints the completed information space map to stdout.
 
-### Resuming an Existing Tree
+### Resuming an Existing Information Space
 
 Use `--resume-from` with a JSON file previously produced by the tool. Expansion continues from any leaf nodes that are still shallower than `--max-depth`. When resuming, the output file defaults to the resume path.
 
@@ -50,7 +50,7 @@ Use `--resume-from` with a JSON file previously produced by the tool. Expansion 
 
 ## Output Format
 
-Trees are stored as JSON documents with the following schema:
+Information spaces are stored as JSON documents with the following schema:
 
 ```json
 {
@@ -68,7 +68,7 @@ Trees are stored as JSON documents with the following schema:
 }
 ```
 
-Each node contains a short `title`, a `description`, and an array of recursive `children`. The program validates data returned by the model to ensure titles and descriptions are non-empty strings.
+Each node contains a short `title`, a `description`, and an array of recursive `children`. The program validates data returned by the model to ensure titles and descriptions are non-empty strings, making it easy to post-process and derive cross-branch insights.
 
 ## Development Notes
 
